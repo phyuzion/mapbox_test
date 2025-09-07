@@ -400,7 +400,7 @@ class _MapScaffoldState extends State<_MapScaffold> {
       ..width = '100%'
       ..height = '100%'
       ..style.border = '0'
-      ..src = 'assets/map/index.html?token=pk.eyJ1IjoicGh5dXppb24iLCJhIjoiY21mOTFnYTg5MGQ4cDJrbzlrNG50c2Z2dyJ9.bQ9adwhAmshtzEuk60R8hA';
+      ..src = Uri.base.resolve('assets/assets/map/index.html').toString() + '?token=pk.eyJ1IjoicGh5dXppb24iLCJhIjoiY21mOTFnYTg5MGQ4cDJrbzlrNG50c2Z2dyJ9.bQ9adwhAmshtzEuk60R8hA';
     _iframe = iframe;
     // Register view factory for HtmlElementView (Web only)
     registerHtmlViewFactory(id, (int viewId) => iframe);
