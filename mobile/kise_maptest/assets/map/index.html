@@ -1,0 +1,311 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.css" rel="stylesheet"/>
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.js"></script>
+  <style>html,body,#map{height:100%;margin:0}</style>
+</head>
+<body>
+<div id="map"></div>
+<script>
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const tk = params.get('token');
+    if (tk) {
+      mapboxgl.accessToken = tk;
+    }
+  } catch (e) { console.warn('[MapView] token parse error', e); }
+
+  function postEvent(evt){
+    const msg = JSON.stringify(evt);
+    try {
+      if (typeof flutter !== 'undefined' && flutter && typeof flutter.postMessage === 'function') {
+        flutter.postMessage(msg);
+        return;
+      }
+    } catch(_){}
+    if (window.flutter && typeof window.flutter.postMessage === 'function') {
+      window.flutter.postMessage(msg);
+    } else if (window.parent && window.parent !== window) {
+      window.parent.postMessage(evt, '*');
+    } else {
+      // no-op
+    }
+  }
+
+  // Console proxy: WKWebView에서 DevTools 없이 로그 수집
+  // keep console.error forwarding only for error diagnostics
+  try {
+    const __error = console.error.bind(console);
+    console.error = (...args)=>{ try{ postEvent({v:1,event:'console',level:'error',message: args.map(a=>{try{return typeof a==='string'?a:JSON.stringify(a);}catch(_){return String(a)}}).join(' ') }); }catch(_){} __error(...args); };
+  } catch(_){ }
+
+  window.__modelModuleReady = false;
+  window.__styleReady = false;
+  window.__modelCmdQueue = [];
+  window.__flushModelQueue = function(){
+    if (!window.__modelModuleReady || !window.__styleReady) return;
+    const q = window.__modelCmdQueue;
+    window.__modelCmdQueue = [];
+    for (const cmd of q) {
+      try {
+        if (cmd.type === 'addModel' && window.__addModelFromCmd) window.__addModelFromCmd(cmd);
+        else if (cmd.type === 'removeModel' && window.__removeModelFromCmd) window.__removeModelFromCmd(cmd);
+      } catch(e){ console.error('[MapView] flush model cmd error', e); }
+    }
+  };
+
+  window.mapview = {
+    ready:false,
+    queue:[],
+    setToken(token){ mapboxgl.accessToken = token; try{ initMap(); }catch(_){} },
+    receive(cmd){
+      try { console.log('[MapView] receive', cmd?.type, cmd); } catch(_){}
+      if (cmd && cmd.type === 'setToken') { // bootstrap-critical: process immediately
+        try { handle(cmd); } catch(e){ console.error('[MapView] handle(setToken) error', e); }
+        return;
+      }
+      this.queue.push(cmd); if(this.ready) this._flush();
+    },
+    _flush(){
+      while(this.queue.length){ const cmd = this.queue.shift(); try{ handle(cmd); }catch(e){
+        console.error('[MapView] handle error', e);
+        postEvent({v:1,event:'error',payload:{message:e && e.message || String(e), cmd}});
+      }}
+    }
+  };
+
+  window.addEventListener('message', (ev)=>{
+    const data = ev.data;
+    if (data && data.type) { console.log('[MapView] postMessage<=', data.type); window.mapview.receive(data); }
+  });
+
+  let map = null;
+  window.__map = null;
+  const markers = new Map();
+
+  function initMap(){
+    if (map) return;
+    if (!mapboxgl.accessToken) return;
+    try {
+      map = new mapboxgl.Map({
+        container:'map',
+        style:'mapbox://styles/mapbox/standard',
+        zoom:13,
+        center:[126.9784,37.5665],
+        pitch:60,
+        antialias:true,
+        config:{ basemap:{ theme:'monochrome' } }
+      });
+    } catch (e) {
+      console.error('[MapView] mapCtorError', e);
+      postEvent({v:1,event:'mapCtorError',payload:{message: (e && e.message) || String(e)}});
+      return;
+    }
+    window.__map = map;
+    // Tap to select location on the map
+    try { map.on('click', (e)=>{ try{ postEvent({v:1, event:'mapClick', lngLat:[e.lngLat.lng, e.lngLat.lat]}); }catch(_){} }); } catch(_){ }
+    map.on('error', (e)=>{
+      try {
+        const detail = e && (e.error||e);
+        postEvent({v:1,event:'mapError',payload:{message: (detail && (detail.message||String(detail))) || 'unknown'}});
+      } catch(err){}
+    });
+    map.on('style.load', ()=>{ window.__styleReady = true; window.__flushModelQueue(); });
+    map.on('load', ()=>{ window.mapview.ready = true; window.mapview._flush(); postEvent({v:1,event:'mapReady'}); });
+  }
+
+  function handle(cmd){
+    switch(cmd.type){
+      case 'setToken': mapboxgl.accessToken = cmd.token; initMap(); break;
+      case 'setCamera':
+        if (!map) return; map.easeTo({center:cmd.center, zoom:cmd.zoom, pitch:cmd.pitch, bearing:cmd.bearing, duration:cmd.durationMs||500});
+        break;
+      case 'addMarker': {
+        if (!map) return;
+        const box = document.createElement('div');
+        box.style.display = 'flex';
+        box.style.alignItems = 'center';
+        box.style.gap = '8px';
+        box.style.padding = '0';
+        box.style.background = 'transparent';
+
+        const img = document.createElement('div');
+        img.style.width = (cmd.icon && cmd.icon.size && cmd.icon.size[0] || 56) + 'px';
+        img.style.height = (cmd.icon && cmd.icon.size && cmd.icon.size[1] || 56) + 'px';
+        img.style.background = 'url(' + (cmd.icon && cmd.icon.value || '') + ') center/cover no-repeat';
+        img.style.borderRadius = '8px';
+
+        const text = document.createElement('div');
+        text.style.fontSize = '14px';
+        text.style.lineHeight = '18px';
+        text.style.color = '#fff';
+        text.style.background = 'rgba(0,0,0,0.55)';
+        text.style.padding = '4px 8px';
+        text.style.borderRadius = '8px';
+        text.textContent = (cmd.label || '').toString();
+
+        box.appendChild(img);
+        box.appendChild(text);
+
+        const marker = new mapboxgl.Marker(box,{anchor:(cmd.icon && cmd.icon.anchor) || 'bottom'})
+          .setLngLat(cmd.lngLat)
+          .setPopup(cmd.popupHtml? new mapboxgl.Popup({offset:24}).setHTML(cmd.popupHtml): undefined)
+          .addTo(map);
+        markers.set(cmd.id, marker);
+        break;
+      }
+      case 'removeMarker': {
+        const m = markers.get(cmd.id);
+        if(m){ m.remove(); markers.delete(cmd.id); }
+        break;
+      }
+      case 'clearMarkers': {
+        for (const [id, m] of markers){ try{ m.remove(); }catch(_){} } markers.clear(); break;
+      }
+      case 'addModel': {
+        console.log('[MapView] addModel cmd', {id:cmd.id, url:cmd?.model?.value, scale:cmd?.model?.scale, at:cmd.lngLatAlt||cmd.lngLat});
+        if (window.__addModelFromCmd && window.__modelModuleReady && window.__styleReady) return window.__addModelFromCmd(cmd);
+        console.warn('[MapView] addModel queued until module/style ready');
+        window.__modelCmdQueue.push(cmd);
+        break;
+      }
+      case 'removeModel': {
+        if (window.__removeModelFromCmd && window.__modelModuleReady && window.__styleReady) return window.__removeModelFromCmd(cmd);
+        console.warn('[MapView] removeModel queued until module/style ready');
+        window.__modelCmdQueue.push(cmd);
+        break;
+      }
+    }
+  }
+
+  initMap();
+</script>
+
+<script type="module">
+  import * as THREE from 'https://esm.sh/three@0.157.0';
+  import { GLTFLoader } from 'https://esm.sh/three@0.157.0/examples/jsm/loaders/GLTFLoader.js';
+
+  const models = new Map();
+
+  function makeCustomLayer(cmd){
+    const id = cmd.id;
+    const lng = cmd.lngLatAlt?.[0] ?? cmd.lngLat?.[0];
+    const lat = cmd.lngLatAlt?.[1] ?? cmd.lngLat?.[1];
+    // 살짝 띄워서(1.5m) 지면 아래로 깔리는 문제 방지
+    const alt = (cmd.lngLatAlt?.[2] ?? 0) + 1.5;
+    const inputScale = (cmd.model && cmd.model.scale) ? cmd.model.scale : 50;
+
+    // Optional rotations [rx, ry, rz] radians. 기본: X=+90°
+    const r = Array.isArray(cmd?.model?.rotate) ? cmd.model.rotate : [Math.PI/2, 0, 0];
+    const rotX = Number(r[0] ?? 0);
+    const rotY = Number(r[1] ?? 0);
+    const rotZ = Number(r[2] ?? 0);
+
+    const coord = mapboxgl.MercatorCoordinate.fromLngLat([lng, lat], alt);
+    const modelTransform = {
+      translateX: coord.x,
+      translateY: coord.y,
+      translateZ: coord.z,
+      scale: coord.meterInMercatorCoordinateUnits() * inputScale,
+      rotateX: rotX,
+      rotateY: rotY,
+      rotateZ: rotZ
+    };
+
+    const layer = {
+      id,
+      type: 'custom',
+      renderingMode: '3d',
+      onAdd(map, gl){
+        this.camera = new THREE.Camera();
+        this.scene = new THREE.Scene();
+        this.renderer = new THREE.WebGLRenderer({canvas: map.getCanvas(), context: gl, antialias:true});
+        this.renderer.autoClear = false;
+        this.clock = new THREE.Clock();
+
+        // 조명: 상향된 헤미스피어 + 디렉셔널
+        const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 0.9);
+        this.scene.add(hemi);
+        const dir = new THREE.DirectionalLight(0xffffff, 1.1);
+        dir.position.set(60, 100, 80).normalize();
+        this.scene.add(dir);
+
+        this.loader = new GLTFLoader();
+        this.loader.setCrossOrigin('anonymous');
+        this.mixer = null;
+        this.root = new THREE.Group();
+        this.scene.add(this.root);
+
+        const url = cmd.model && cmd.model.value;
+        if (url) {
+          try { fetch(url, {mode:'cors'}).then(r=>{ console.log('[MapView] prefetch', url, 'status=', r.status, 'type=', r.headers.get('content-type')); }); } catch(_){ }
+
+          this.loader.load(url, (gltf)=>{
+            console.log('[MapView] GLTF loaded ok', url, 'nodes=', gltf.scene?.children?.length||0, 'anims=', gltf.animations?.length||0);
+            try {
+              const box = new THREE.Box3().setFromObject(gltf.scene);
+              const size = new THREE.Vector3(); box.getSize(size);
+              console.log('[MapView] bbox size', {x:size.x, y:size.y, z:size.z});
+            } catch(_){ }
+            this.root.add(gltf.scene);
+            if (gltf.animations && gltf.animations.length) {
+              this.mixer = new THREE.AnimationMixer(gltf.scene);
+              const action = this.mixer.clipAction(gltf.animations[0]);
+              action.play();
+            }
+          }, undefined, (e)=>{
+            const status = e?.target?.status; const respUrl = e?.target?.responseURL;
+            console.error('[MapView] GLTF load error', e && (e.message||e), 'status=', status, 'url=', respUrl || url);
+          });
+        }
+
+        this.modelTransform = modelTransform;
+        try { __map && __map.easeTo({center:[lng,lat], zoom:18, pitch:60, duration:800}); } catch(_){ }
+      },
+      render(gl, matrix){
+        const m = new THREE.Matrix4().fromArray(matrix);
+        const t = new THREE.Matrix4().makeTranslation(this.modelTransform.translateX, this.modelTransform.translateY, this.modelTransform.translateZ);
+        const s = new THREE.Matrix4().makeScale(this.modelTransform.scale, -this.modelTransform.scale, this.modelTransform.scale);
+        const rx = new THREE.Matrix4().makeRotationX(this.modelTransform.rotateX);
+        const ry = new THREE.Matrix4().makeRotationY(this.modelTransform.rotateY);
+        const rz = new THREE.Matrix4().makeRotationZ(this.modelTransform.rotateZ);
+        // 순서: T -> S -> Rx -> Ry -> Rz (Mapbox 샘플과 동일)
+        this.camera.projectionMatrix = m.multiply(t).multiply(s).multiply(rx).multiply(ry).multiply(rz);
+
+        if (this.mixer) this.mixer.update(this.clock.getDelta());
+        this.renderer.resetState();
+        this.renderer.render(this.scene, this.camera);
+        __map && __map.triggerRepaint();
+      }
+    };
+
+    return layer;
+  }
+
+  window.__addModelFromCmd = (cmd)=>{
+    if (!window.__map) { console.warn('[MapView] map not ready for addModel'); return; }
+    console.log('[MapView] __addModelFromCmd applying', cmd?.id);
+    if (models.has(cmd.id)) { console.warn('[MapView] model id exists, removing first'); window.__removeModelFromCmd(cmd); }
+    const layer = makeCustomLayer(cmd);
+    window.__map.addLayer(layer);
+    models.set(cmd.id, layer);
+  };
+
+  window.__removeModelFromCmd = (cmd)=>{
+    if (!window.__map) return;
+    if (models.has(cmd.id)) {
+      try { window.__map.removeLayer(cmd.id); } catch(_) {}
+      models.delete(cmd.id);
+    }
+  };
+
+  window.__modelModuleReady = true;
+  if (window.__flushModelQueue) window.__flushModelQueue();
+</script>
+</body>
+</html>
+
+
